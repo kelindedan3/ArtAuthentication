@@ -167,3 +167,199 @@
         price: (get price a)
     }
 )
+
+
+
+(define-map Categories 
+    { category-id: uint }
+    { name: (string-ascii 32) }
+)
+
+(define-map ArtworkCategories
+    { artwork-id: uint }
+    { category-id: uint }
+)
+
+(define-data-var total-categories uint u0)
+
+(define-public (create-category (name (string-ascii 32)))
+    (let ((new-id (+ (var-get total-categories) u1)))
+        (map-set Categories
+            { category-id: new-id }
+            { name: name }
+        )
+        (var-set total-categories new-id)
+        (ok new-id)
+    )
+)
+
+(define-public (set-artwork-category (artwork-id uint) (category-id uint))
+    (let ((artwork (unwrap! (map-get? Artworks {artwork-id: artwork-id}) ERR-NOT-FOUND)))
+        (asserts! (is-eq (get artist artwork) tx-sender) ERR-NOT-AUTHORIZED)
+        (map-set ArtworkCategories
+            { artwork-id: artwork-id }
+            { category-id: category-id }
+        )
+        (ok true)
+    )
+)
+
+
+(define-map ArtworkHistory
+    { artwork-id: uint, action-id: uint }
+    {
+        action-type: (string-ascii 20),
+        actor: principal,
+        timestamp: uint,
+        details: (string-ascii 256)
+    }
+)
+
+(define-map ArtworkActionCounter 
+    { artwork-id: uint }
+    { count: uint }
+)
+
+(define-public (record-artwork-action (artwork-id uint) (action-type (string-ascii 20)) (details (string-ascii 256)))
+    (let (
+        (counter (default-to {count: u0} (map-get? ArtworkActionCounter {artwork-id: artwork-id})))
+        (new-action-id (+ (get count counter) u1))
+    )
+        (map-set ArtworkHistory
+            { artwork-id: artwork-id, action-id: new-action-id }
+            {
+                action-type: action-type,
+                actor: tx-sender,
+                timestamp: stacks-block-height,
+                details: details
+            }
+        )
+        (map-set ArtworkActionCounter {artwork-id: artwork-id} {count: new-action-id})
+        (ok true)
+    )
+)
+
+
+(define-map VerifierRatings
+    { verifier: principal }
+    {
+        total-ratings: uint,
+        rating-sum: uint,
+        average-rating: uint
+    }
+)
+
+(define-public (rate-verifier (verifier principal) (rating uint))
+    (let (
+        (current-ratings (default-to {total-ratings: u0, rating-sum: u0, average-rating: u0} 
+            (map-get? VerifierRatings {verifier: verifier})))
+        (new-total (+ (get total-ratings current-ratings) u1))
+        (new-sum (+ (get rating-sum current-ratings) rating))
+    )
+        (asserts! (<= rating u5) (err u106))
+        (map-set VerifierRatings
+            {verifier: verifier}
+            {
+                total-ratings: new-total,
+                rating-sum: new-sum,
+                average-rating: (/ new-sum new-total)
+            }
+        )
+        (ok true)
+    )
+)
+
+
+(define-map Collections
+    { collection-id: uint }
+    {
+        name: (string-ascii 64),
+        creator: principal,
+        description: (string-ascii 256)
+    }
+)
+
+(define-map CollectionArtworks
+    { collection-id: uint, artwork-id: uint }
+    { included: bool }
+)
+
+(define-data-var total-collections uint u0)
+
+(define-public (create-collection (name (string-ascii 64)) (description (string-ascii 256)))
+    (let ((new-id (+ (var-get total-collections) u1)))
+        (map-set Collections
+            { collection-id: new-id }
+            {
+                name: name,
+                creator: tx-sender,
+                description: description
+            }
+        )
+        (var-set total-collections new-id)
+        (ok new-id)
+    )
+)
+
+(define-public (add-to-collection (collection-id uint) (artwork-id uint))
+    (let ((collection (unwrap! (map-get? Collections {collection-id: collection-id}) ERR-NOT-FOUND)))
+        (asserts! (is-eq (get creator collection) tx-sender) ERR-NOT-AUTHORIZED)
+        (map-set CollectionArtworks
+            { collection-id: collection-id, artwork-id: artwork-id }
+            { included: true }
+        )
+        (ok true)
+    )
+)
+
+
+(define-map Comments
+    { artwork-id: uint, comment-id: uint }
+    {
+        author: principal,
+        content: (string-ascii 256),
+        timestamp: uint
+    }
+)
+
+(define-map ArtworkCommentCounter
+    { artwork-id: uint }
+    { count: uint }
+)
+
+(define-public (add-comment (artwork-id uint) (content (string-ascii 256)))
+    (let (
+        (counter (default-to {count: u0} (map-get? ArtworkCommentCounter {artwork-id: artwork-id})))
+        (new-comment-id (+ (get count counter) u1))
+    )
+        (map-set Comments
+            { artwork-id: artwork-id, comment-id: new-comment-id }
+            {
+                author: tx-sender,
+                content: content,
+                timestamp: stacks-block-height
+            }
+        )
+        (map-set ArtworkCommentCounter {artwork-id: artwork-id} {count: new-comment-id})
+        (ok true)
+    )
+)
+
+
+(define-map ArtworkTags
+    { artwork-id: uint, tag: (string-ascii 32) }
+    { active: bool }
+)
+
+(define-public (add-artwork-tag (artwork-id uint) (tag (string-ascii 32)))
+    (let ((artwork (unwrap! (map-get? Artworks {artwork-id: artwork-id}) ERR-NOT-FOUND)))
+        (asserts! (is-eq (get artist artwork) tx-sender) ERR-NOT-AUTHORIZED)
+        (map-set ArtworkTags
+            { artwork-id: artwork-id, tag: tag }
+            { active: true }
+        )
+        (ok true)
+    )
+)
+
+
