@@ -363,3 +363,142 @@
 )
 
 
+
+(define-map ArtworkBids
+    { artwork-id: uint, bidder: principal }
+    {
+        bid-amount: uint,
+        timestamp: uint
+    }
+)
+
+(define-map HighestBids
+    { artwork-id: uint }
+    {
+        bidder: principal,
+        amount: uint
+    }
+)
+
+(define-public (place-bid (artwork-id uint) (bid-amount uint))
+    (let (
+        (artwork (unwrap! (map-get? Artworks {artwork-id: artwork-id}) ERR-NOT-FOUND))
+        (current-highest (default-to {bidder: tx-sender, amount: u0} 
+            (map-get? HighestBids {artwork-id: artwork-id})))
+    )
+        (asserts! (> bid-amount (get amount current-highest)) (err u107))
+        (try! (stx-transfer? bid-amount tx-sender (as-contract tx-sender)))
+        
+        (map-set ArtworkBids
+            {artwork-id: artwork-id, bidder: tx-sender}
+            {bid-amount: bid-amount, timestamp: stacks-block-height}
+        )
+        
+        (map-set HighestBids
+            {artwork-id: artwork-id}
+            {bidder: tx-sender, amount: bid-amount}
+        )
+        (ok true)
+    )
+)
+
+(define-public (accept-bid (artwork-id uint))
+    (let (
+        (artwork (unwrap! (map-get? Artworks {artwork-id: artwork-id}) ERR-NOT-FOUND))
+        (highest-bid (unwrap! (map-get? HighestBids {artwork-id: artwork-id}) ERR-NOT-FOUND))
+    )
+        (asserts! (is-eq (get artist artwork) tx-sender) ERR-NOT-AUTHORIZED)
+        (try! (as-contract (stx-transfer? (get amount highest-bid) tx-sender (get artist artwork))))
+        (ok true)
+    )
+)
+
+
+(define-map Exhibitions
+    { exhibition-id: uint }
+    {
+        name: (string-ascii 64),
+        curator: principal,
+        start-block: uint,
+        end-block: uint,
+        active: bool
+    }
+)
+
+(define-map ExhibitionArtworks
+    { exhibition-id: uint, artwork-id: uint }
+    {
+        special-price: uint,
+        featured: bool
+    }
+)
+
+(define-data-var total-exhibitions uint u0)
+
+(define-public (create-exhibition (name (string-ascii 64)) (duration uint))
+    (let ((new-id (+ (var-get total-exhibitions) u1)))
+        (map-set Exhibitions
+            { exhibition-id: new-id }
+            {
+                name: name,
+                curator: tx-sender,
+                start-block: stacks-block-height,
+                end-block: (+ stacks-block-height duration),
+                active: true
+            }
+        )
+        (var-set total-exhibitions new-id)
+        (ok new-id)
+    )
+)
+
+(define-public (add-artwork-to-exhibition (exhibition-id uint) (artwork-id uint) (special-price uint))
+    (let (
+        (exhibition (unwrap! (map-get? Exhibitions {exhibition-id: exhibition-id}) ERR-NOT-FOUND))
+        (artwork (unwrap! (map-get? Artworks {artwork-id: artwork-id}) ERR-NOT-FOUND))
+    )
+        (asserts! (is-eq (get curator exhibition) tx-sender) ERR-NOT-AUTHORIZED)
+        (asserts! (get active exhibition) (err u108))
+        
+        (map-set ExhibitionArtworks
+            { exhibition-id: exhibition-id, artwork-id: artwork-id }
+            { special-price: special-price, featured: true }
+        )
+        (ok true)
+    )
+)
+
+(define-public (remove-artwork-from-exhibition (exhibition-id uint) (artwork-id uint))
+    (let (
+        (exhibition (unwrap! (map-get? Exhibitions {exhibition-id: exhibition-id}) ERR-NOT-FOUND))
+        (artwork (unwrap! (map-get? Artworks {artwork-id: artwork-id}) ERR-NOT-FOUND))
+    )
+        (asserts! (is-eq (get curator exhibition) tx-sender) ERR-NOT-AUTHORIZED)
+        (asserts! (get active exhibition) (err u108))
+        
+        (map-delete ExhibitionArtworks
+            { exhibition-id: exhibition-id, artwork-id: artwork-id }
+        )
+        (ok true)
+    )
+)
+(define-public (end-exhibition (exhibition-id uint))
+    (let (
+        (exhibition (unwrap! (map-get? Exhibitions {exhibition-id: exhibition-id}) ERR-NOT-FOUND))
+    )
+        (asserts! (is-eq (get curator exhibition) tx-sender) ERR-NOT-AUTHORIZED)
+        (asserts! (get active exhibition) (err u108))
+        
+        (map-set Exhibitions
+            { exhibition-id: exhibition-id }
+            {
+                name: (get name exhibition),
+                curator: tx-sender,
+                start-block: (get start-block exhibition),
+                end-block: stacks-block-height,
+                active: false
+            }
+        )
+        (ok true)
+    )
+)
