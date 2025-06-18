@@ -502,3 +502,185 @@
         (ok true)
     )
 )
+
+(define-map ArtworkOwnership
+    { artwork-id: uint }
+    { 
+        current-owner: principal,
+        previous-owner: (optional principal),
+        transfer-count: uint
+    }
+)
+
+(define-map MarketplaceListings
+    { artwork-id: uint }
+    {
+        seller: principal,
+        price: uint,
+        listed: bool,
+        listing-timestamp: uint
+    }
+)
+
+(define-map OwnershipHistory
+    { artwork-id: uint, transfer-id: uint }
+    {
+        from-owner: principal,
+        to-owner: principal,
+        price: uint,
+        timestamp: uint
+    }
+)
+
+(define-map OwnershipTransferCounter
+    { artwork-id: uint }
+    { count: uint }
+)
+
+(define-constant ERR-NOT-OWNER (err u105))
+(define-constant ERR-NOT-LISTED (err u106))
+(define-constant ERR-INSUFFICIENT-PAYMENT (err u107))
+(define-constant ERR-ALREADY-LISTED (err u108))
+
+(define-public (initialize-ownership (artwork-id uint))
+    (let ((artwork (unwrap! (map-get? Artworks {artwork-id: artwork-id}) ERR-NOT-FOUND)))
+        (asserts! (is-eq (get artist artwork) tx-sender) ERR-NOT-AUTHORIZED)
+        (asserts! (is-none (map-get? ArtworkOwnership {artwork-id: artwork-id})) ERR-ALREADY-VERIFIED)
+        
+        (map-set ArtworkOwnership
+            { artwork-id: artwork-id }
+            {
+                current-owner: tx-sender,
+                previous-owner: none,
+                transfer-count: u0
+            }
+        )
+        (ok true)
+    )
+)
+
+(define-public (list-artwork-for-sale (artwork-id uint) (price uint))
+    (let ((ownership (unwrap! (map-get? ArtworkOwnership {artwork-id: artwork-id}) ERR-NOT-FOUND)))
+        (asserts! (is-eq (get current-owner ownership) tx-sender) ERR-NOT-OWNER)
+        (asserts! (is-none (map-get? MarketplaceListings {artwork-id: artwork-id})) ERR-ALREADY-LISTED)
+        
+        (map-set MarketplaceListings
+            { artwork-id: artwork-id }
+            {
+                seller: tx-sender,
+                price: price,
+                listed: true,
+                listing-timestamp: stacks-block-height
+            }
+        )
+        (ok true)
+    )
+)
+
+(define-public (remove-listing (artwork-id uint))
+    (let ((listing (unwrap! (map-get? MarketplaceListings {artwork-id: artwork-id}) ERR-NOT-LISTED)))
+        (asserts! (is-eq (get seller listing) tx-sender) ERR-NOT-AUTHORIZED)
+        (asserts! (get listed listing) ERR-NOT-LISTED)
+        
+        (map-delete MarketplaceListings { artwork-id: artwork-id })
+        (ok true)
+    )
+)
+
+(define-public (purchase-artwork (artwork-id uint))
+    (let (
+        (listing (unwrap! (map-get? MarketplaceListings {artwork-id: artwork-id}) ERR-NOT-LISTED))
+        (artwork (unwrap! (map-get? Artworks {artwork-id: artwork-id}) ERR-NOT-FOUND))
+        (ownership (unwrap! (map-get? ArtworkOwnership {artwork-id: artwork-id}) ERR-NOT-FOUND))
+        (sale-price (get price listing))
+        (royalty-amount (/ (* sale-price (get royalty-percentage artwork)) u100))
+        (seller-amount (- sale-price royalty-amount))
+    )
+        (asserts! (get listed listing) ERR-NOT-LISTED)
+        (asserts! (not (is-eq tx-sender (get seller listing))) ERR-NOT-AUTHORIZED)
+        
+        (try! (stx-transfer? royalty-amount tx-sender (get artist artwork)))
+        (try! (stx-transfer? seller-amount tx-sender (get seller listing)))
+        
+        (try! (transfer-ownership-internal artwork-id (get current-owner ownership) tx-sender sale-price))
+        
+        (map-delete MarketplaceListings { artwork-id: artwork-id })
+        (ok true)
+    )
+)
+
+(define-public (transfer-artwork (artwork-id uint) (new-owner principal))
+    (let ((ownership (unwrap! (map-get? ArtworkOwnership {artwork-id: artwork-id}) ERR-NOT-FOUND)))
+        (asserts! (is-eq (get current-owner ownership) tx-sender) ERR-NOT-OWNER)
+        
+        (try! (transfer-ownership-internal artwork-id tx-sender new-owner u0))
+        (ok true)
+    )
+)
+
+(define-private (transfer-ownership-internal (artwork-id uint) (from-owner principal) (to-owner principal) (price uint))
+    (let (
+        (ownership (unwrap! (map-get? ArtworkOwnership {artwork-id: artwork-id}) ERR-NOT-FOUND))
+        (counter (default-to {count: u0} (map-get? OwnershipTransferCounter {artwork-id: artwork-id})))
+        (new-transfer-id (+ (get count counter) u1))
+    )
+        (map-set ArtworkOwnership
+            { artwork-id: artwork-id }
+            {
+                current-owner: to-owner,
+                previous-owner: (some from-owner),
+                transfer-count: (+ (get transfer-count ownership) u1)
+            }
+        )
+        
+        (map-set OwnershipHistory
+            { artwork-id: artwork-id, transfer-id: new-transfer-id }
+            {
+                from-owner: from-owner,
+                to-owner: to-owner,
+                price: price,
+                timestamp: stacks-block-height
+            }
+        )
+        
+        (map-set OwnershipTransferCounter {artwork-id: artwork-id} {count: new-transfer-id})
+        (ok true)
+    )
+)
+
+(define-read-only (get-artwork-owner (artwork-id uint))
+    (map-get? ArtworkOwnership {artwork-id: artwork-id})
+)
+
+(define-read-only (get-marketplace-listing (artwork-id uint))
+    (map-get? MarketplaceListings {artwork-id: artwork-id})
+)
+
+(define-read-only (get-ownership-history (artwork-id uint) (transfer-id uint))
+    (map-get? OwnershipHistory {artwork-id: artwork-id, transfer-id: transfer-id})
+)
+
+(define-read-only (is-artwork-owner (artwork-id uint) (address principal))
+    (match (map-get? ArtworkOwnership {artwork-id: artwork-id})
+        ownership (is-eq (get current-owner ownership) address)
+        false
+    )
+)
+
+(define-read-only (calculate-purchase-breakdown (artwork-id uint))
+    (let (
+        (listing (unwrap! (map-get? MarketplaceListings {artwork-id: artwork-id}) ERR-NOT-LISTED))
+        (artwork (unwrap! (map-get? Artworks {artwork-id: artwork-id}) ERR-NOT-FOUND))
+        (sale-price (get price listing))
+        (royalty-amount (/ (* sale-price (get royalty-percentage artwork)) u100))
+        (seller-amount (- sale-price royalty-amount))
+    )
+        (ok {
+            total-price: sale-price,
+            royalty-to-artist: royalty-amount,
+            payment-to-seller: seller-amount,
+            artist: (get artist artwork),
+            seller: (get seller listing)
+        })
+    )
+)
