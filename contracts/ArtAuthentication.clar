@@ -14,6 +14,71 @@
 (define-constant ERR-ALREADY-VERIFIED (err u102))
 (define-constant ERR-NOT-FOUND (err u103))
 (define-constant ERR-INSUFFICIENT-STAKE (err u104))
+(define-constant ERR-DISPUTE-EXISTS (err u109))
+(define-constant ERR-DISPUTE-NOT-FOUND (err u110))
+(define-constant ERR-DISPUTE-RESOLVED (err u111))
+(define-constant ERR-NOT-ARBITRATOR (err u112))
+(define-constant ERR-ALREADY-VOTED (err u113))
+(define-constant ERR-INVALID-VOTE (err u114))
+(define-constant ERR-DISPUTE-PERIOD-ENDED (err u115))
+(define-constant ERR-INSUFFICIENT-ARBITRATOR-STAKE (err u116))
+
+(define-constant dispute-period-blocks u144)
+(define-constant arbitrator-min-stake u5000)
+(define-constant required-arbitrator-votes u3)
+
+(define-data-var total-disputes uint u0)
+(define-data-var total-arbitrators uint u0)
+
+(define-map Disputes
+    { dispute-id: uint }
+    {
+        artwork-id: uint,
+        disputed-verifier: principal,
+        disputer: principal,
+        reason: (string-ascii 256),
+        status: (string-ascii 20),
+        created-at: uint,
+        resolved-at: (optional uint),
+        resolution: (optional (string-ascii 20))
+    }
+)
+
+(define-map DisputeVotes
+    { dispute-id: uint, arbitrator: principal }
+    {
+        vote: (string-ascii 20),
+        timestamp: uint
+    }
+)
+
+(define-map DisputeVoteCounts
+    { dispute-id: uint }
+    {
+        uphold-count: uint,
+        overturn-count: uint,
+        total-votes: uint
+    }
+)
+
+(define-map Arbitrators
+    { address: principal }
+    {
+        stake-amount: uint,
+        disputes-resolved: uint,
+        active: bool,
+        reputation-score: uint
+    }
+)
+
+(define-map ArbitratorReputation
+    { arbitrator: principal }
+    {
+        correct-votes: uint,
+        total-votes: uint,
+        reputation-percentage: uint
+    }
+)
 
 ;; Data Variables
 (define-data-var total-artworks uint u0)
@@ -52,6 +117,231 @@
 )
 
 ;; Public Functions
+
+
+(define-public (register-arbitrator (stake-amount uint))
+    (if (>= stake-amount arbitrator-min-stake)
+        (begin
+            (try! (stx-transfer? stake-amount tx-sender (as-contract tx-sender)))
+            (map-set Arbitrators
+                { address: tx-sender }
+                {
+                    stake-amount: stake-amount,
+                    disputes-resolved: u0,
+                    active: true,
+                    reputation-score: u100
+                }
+            )
+            (var-set total-arbitrators (+ (var-get total-arbitrators) u1))
+            (ok true)
+        )
+        ERR-INSUFFICIENT-ARBITRATOR-STAKE
+    )
+)
+
+(define-public (file-dispute (artwork-id uint) (disputed-verifier principal) (reason (string-ascii 256)))
+    (let (
+        (artwork (unwrap! (map-get? Artworks {artwork-id: artwork-id}) ERR-NOT-FOUND))
+        (certificate (unwrap! (map-get? ArtworkCertificates {artwork-id: artwork-id}) ERR-NOT-FOUND))
+        (new-dispute-id (+ (var-get total-disputes) u1))
+    )
+        (asserts! (get verified artwork) ERR-NOT-FOUND)
+        (asserts! (is-eq (get verifier certificate) disputed-verifier) ERR-NOT-AUTHORIZED)
+        ;; (asserts! (is-none (get-active-dispute artwork-id)) ERR-DISPUTE-EXISTS)
+        (asserts! (<= (- stacks-block-height (get timestamp certificate)) dispute-period-blocks) ERR-DISPUTE-PERIOD-ENDED)
+        
+        (map-set Disputes
+            { dispute-id: new-dispute-id }
+            {
+                artwork-id: artwork-id,
+                disputed-verifier: disputed-verifier,
+                disputer: tx-sender,
+                reason: reason,
+                status: "pending",
+                created-at: stacks-block-height,
+                resolved-at: none,
+                resolution: none
+            }
+        )
+        
+        (map-set DisputeVoteCounts
+            { dispute-id: new-dispute-id }
+            {
+                uphold-count: u0,
+                overturn-count: u0,
+                total-votes: u0
+            }
+        )
+        
+        (var-set total-disputes new-dispute-id)
+        (ok new-dispute-id)
+    )
+)
+
+(define-public (vote-on-dispute (dispute-id uint) (vote (string-ascii 20)))
+    (let (
+        (dispute (unwrap! (map-get? Disputes {dispute-id: dispute-id}) ERR-DISPUTE-NOT-FOUND))
+        (arbitrator (unwrap! (map-get? Arbitrators {address: tx-sender}) ERR-NOT-ARBITRATOR))
+        (vote-counts (unwrap! (map-get? DisputeVoteCounts {dispute-id: dispute-id}) ERR-DISPUTE-NOT-FOUND))
+    )
+        (asserts! (get active arbitrator) ERR-NOT-ARBITRATOR)
+        (asserts! (is-eq (get status dispute) "pending") ERR-DISPUTE-RESOLVED)
+        (asserts! (is-none (map-get? DisputeVotes {dispute-id: dispute-id, arbitrator: tx-sender})) ERR-ALREADY-VOTED)
+        (asserts! (or (is-eq vote "uphold") (is-eq vote "overturn")) ERR-INVALID-VOTE)
+        
+        (map-set DisputeVotes
+            { dispute-id: dispute-id, arbitrator: tx-sender }
+            {
+                vote: vote,
+                timestamp: stacks-block-height
+            }
+        )
+        
+        (let (
+            (new-uphold-count (if (is-eq vote "uphold") (+ (get uphold-count vote-counts) u1) (get uphold-count vote-counts)))
+            (new-overturn-count (if (is-eq vote "overturn") (+ (get overturn-count vote-counts) u1) (get overturn-count vote-counts)))
+            (new-total-votes (+ (get total-votes vote-counts) u1))
+        )
+            (map-set DisputeVoteCounts
+                { dispute-id: dispute-id }
+                {
+                    uphold-count: new-uphold-count,
+                    overturn-count: new-overturn-count,
+                    total-votes: new-total-votes
+                }
+            )
+            ;; (if (>= new-total-votes required-arbitrator-votes)
+            ;;     (try! (resolve-dispute-internal dispute-id new-uphold-count new-overturn-count))
+            ;;     (ok true)
+            ;; )
+            (ok true)
+        )
+    )
+)
+
+(define-private (resolve-dispute-internal (dispute-id uint) (uphold-count uint) (overturn-count uint))
+    (let (
+        (dispute (unwrap! (map-get? Disputes {dispute-id: dispute-id}) ERR-DISPUTE-NOT-FOUND))
+        (resolution (if (> uphold-count overturn-count) "uphold" "overturn"))
+        (artwork-id (get artwork-id dispute))
+        (disputed-verifier (get disputed-verifier dispute))
+    )
+        (map-set Disputes
+            { dispute-id: dispute-id }
+            {
+                artwork-id: artwork-id,
+                disputed-verifier: disputed-verifier,
+                disputer: (get disputer dispute),
+                reason: (get reason dispute),
+                status: "resolved",
+                created-at: (get created-at dispute),
+                resolved-at: (some stacks-block-height),
+                resolution: (some resolution)
+            }
+        )
+        
+        (if (is-eq resolution "overturn")
+            (begin
+                (try! (revert-verification-internal artwork-id))
+                (try! (slash-verifier-stake disputed-verifier))
+                (ok true)
+            )
+            (ok true)
+        )
+    )
+)
+
+(define-private (revert-verification-internal (artwork-id uint))
+    (let ((artwork (unwrap! (map-get? Artworks {artwork-id: artwork-id}) ERR-NOT-FOUND)))
+        (map-set Artworks
+            { artwork-id: artwork-id }
+            {
+                artist: (get artist artwork),
+                title: (get title artwork),
+                creation-date: (get creation-date artwork),
+                verified: false,
+                verifier: none,
+                royalty-percentage: (get royalty-percentage artwork),
+                price: (get price artwork)
+            }
+        )
+        (map-delete ArtworkCertificates { artwork-id: artwork-id })
+        (ok true)
+    )
+)
+
+(define-private (slash-verifier-stake (verifier principal))
+    (let ((verifier-info (unwrap! (map-get? Verifiers {address: verifier}) ERR-NOT-FOUND)))
+        (map-set Verifiers
+            { address: verifier }
+            {
+                stake-amount: (/ (get stake-amount verifier-info) u2),
+                verification-count: (get verification-count verifier-info),
+                active: false
+            }
+        )
+        (ok true)
+    )
+)
+
+;; (define-private (get-active-dispute (artwork-id uint))
+;;     (let ((disputes-list (filter-disputes-by-artwork artwork-id)))
+;;         (option-fold find-pending-dispute none disputes-list)
+;;     )
+;; )
+
+(define-private (filter-disputes-by-artwork (artwork-id uint))
+    (list)
+)
+
+(define-private (find-pending-dispute (dispute-id uint) (acc (optional uint)))
+    (if (is-some acc)
+        acc
+        (let ((dispute (map-get? Disputes {dispute-id: dispute-id})))
+            (if (and (is-some dispute) (is-eq (get status (unwrap-panic dispute)) "pending"))
+                (some dispute-id)
+                none
+            )
+        )
+    )
+)
+
+(define-read-only (get-dispute-details (dispute-id uint))
+    (map-get? Disputes {dispute-id: dispute-id})
+)
+
+(define-read-only (get-dispute-votes (dispute-id uint))
+    (map-get? DisputeVoteCounts {dispute-id: dispute-id})
+)
+
+(define-read-only (get-arbitrator-details (address principal))
+    (map-get? Arbitrators {address: address})
+)
+
+(define-read-only (is-arbitrator (address principal))
+    (match (map-get? Arbitrators {address: address})
+        arbitrator-info (get active arbitrator-info)
+        false
+    )
+)
+
+(define-read-only (get-arbitrator-vote (dispute-id uint) (arbitrator principal))
+    (map-get? DisputeVotes {dispute-id: dispute-id, arbitrator: arbitrator})
+)
+
+(define-read-only (can-file-dispute (artwork-id uint))
+    (let ((certificate (map-get? ArtworkCertificates {artwork-id: artwork-id})))
+        (if (is-some certificate)
+            (let ((cert-data (unwrap-panic certificate)))
+                (and
+                    (<= (- stacks-block-height (get timestamp cert-data)) dispute-period-blocks)
+                    ;; (is-none (get-active-dispute artwork-id))
+                )
+            )
+            false
+        )
+    )
+)
 
 ;; Register new artwork
 (define-public (register-artwork (title (string-ascii 64)) (royalty uint) (price uint))
