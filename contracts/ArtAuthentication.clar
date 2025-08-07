@@ -974,3 +974,495 @@
         })
     )
 )
+
+;; ============================================================================
+;; COMPREHENSIVE ART PROVENANCE CHAIN SYSTEM
+;; ============================================================================
+
+;; Provenance event types and data structures
+(define-constant PROVENANCE-CREATION "creation")
+(define-constant PROVENANCE-AUTHENTICATION "authentication") 
+(define-constant PROVENANCE-CONSERVATION "conservation")
+(define-constant PROVENANCE-EXHIBITION "exhibition")
+(define-constant PROVENANCE-CONDITION-ASSESSMENT "condition")
+(define-constant PROVENANCE-OWNERSHIP-CHANGE "ownership")
+(define-constant PROVENANCE-LOCATION-CHANGE "location")
+(define-constant PROVENANCE-INSURANCE-UPDATE "insurance")
+
+;; Error constants for provenance system
+(define-constant ERR-INVALID-PROVENANCE-TYPE (err u117))
+(define-constant ERR-PROVENANCE-NOT-FOUND (err u118))
+(define-constant ERR-INVALID-CONDITION-SCORE (err u119))
+(define-constant ERR-CONSERVATION-UNAUTHORIZED (err u120))
+
+;; Data variables for provenance tracking
+(define-data-var total-provenance-events uint u0)
+(define-data-var total-conservators uint u0)
+
+;; Main provenance chain - comprehensive event tracking
+(define-map ProvenanceChain
+    { artwork-id: uint, event-id: uint }
+    {
+        event-type: (string-ascii 32),
+        event-performer: principal,
+        timestamp: uint,
+        block-height: uint,
+        description: (string-ascii 512),
+        location: (optional (string-ascii 256)),
+        documentation-hash: (optional (string-ascii 64)),
+        verified: bool,
+        verifier: (optional principal)
+    }
+)
+
+;; Event counter per artwork for proper sequencing
+(define-map ArtworkProvenanceCounter
+    { artwork-id: uint }
+    { event-count: uint }
+)
+
+;; Conservation records with detailed tracking
+(define-map ConservationRecords
+    { artwork-id: uint, conservation-id: uint }
+    {
+        conservator: principal,
+        conservation-type: (string-ascii 64),
+        condition-before: uint,
+        condition-after: uint,
+        materials-used: (string-ascii 256),
+        techniques-applied: (string-ascii 256),
+        cost: uint,
+        duration-days: uint,
+        timestamp: uint,
+        documentation-hash: (string-ascii 64)
+    }
+)
+
+;; Conservation counter per artwork
+(define-map ArtworkConservationCounter
+    { artwork-id: uint }
+    { conservation-count: uint }
+)
+
+;; Certified conservators registry
+(define-map CertifiedConservators
+    { conservator: principal }
+    {
+        certification-level: uint,
+        specializations: (string-ascii 256),
+        active: bool,
+        conservation-count: uint,
+        average-rating: uint,
+        certification-body: (string-ascii 128)
+    }
+)
+
+;; Exhibition provenance linking
+(define-map ExhibitionProvenance
+    { artwork-id: uint, exhibition-id: uint }
+    {
+        participation-type: (string-ascii 32),
+        display-duration: uint,
+        special-handling: bool,
+        insurance-value: uint,
+        condition-report: (string-ascii 256),
+        timestamp: uint
+    }
+)
+
+;; Physical condition assessments over time
+(define-map ConditionAssessments
+    { artwork-id: uint, assessment-id: uint }
+    {
+        assessor: principal,
+        overall-condition: uint,
+        structural-integrity: uint,
+        surface-condition: uint,
+        color-stability: uint,
+        environmental-damage: uint,
+        assessment-method: (string-ascii 128),
+        recommendations: (string-ascii 512),
+        next-assessment-due: uint,
+        timestamp: uint
+    }
+)
+
+;; Assessment counter per artwork
+(define-map ArtworkAssessmentCounter
+    { artwork-id: uint }
+    { assessment-count: uint }
+)
+
+;; Location and custody tracking
+(define-map LocationHistory
+    { artwork-id: uint, location-id: uint }
+    {
+        location-type: (string-ascii 32),
+        institution-name: (string-ascii 128),
+        physical-address: (string-ascii 256),
+        custody-type: (string-ascii 32),
+        environmental-conditions: (string-ascii 128),
+        security-level: uint,
+        insurance-coverage: uint,
+        moved-from: (optional (string-ascii 128)),
+        timestamp: uint
+    }
+)
+
+;; Location counter per artwork
+(define-map ArtworkLocationCounter
+    { artwork-id: uint }
+    { location-count: uint }
+)
+
+;; Insurance and valuation history
+(define-map InsuranceHistory
+    { artwork-id: uint, insurance-id: uint }
+    {
+        insurer: (string-ascii 128),
+        policy-number: (string-ascii 64),
+        insured-value: uint,
+        premium-amount: uint,
+        coverage-type: (string-ascii 64),
+        policy-start: uint,
+        policy-end: uint,
+        appraisal-date: uint,
+        appraiser: (string-ascii 128),
+        timestamp: uint
+    }
+)
+
+;; Insurance counter per artwork
+(define-map ArtworkInsuranceCounter
+    { artwork-id: uint }
+    { insurance-count: uint }
+)
+
+;; Register certified conservator
+(define-public (register-conservator 
+    (certification-level uint) 
+    (specializations (string-ascii 256))
+    (certification-body (string-ascii 128)))
+    (begin
+        (asserts! (<= certification-level u5) ERR-INVALID-CONDITION-SCORE)
+        (map-set CertifiedConservators
+            { conservator: tx-sender }
+            {
+                certification-level: certification-level,
+                specializations: specializations,
+                active: true,
+                conservation-count: u0,
+                average-rating: u0,
+                certification-body: certification-body
+            }
+        )
+        (var-set total-conservators (+ (var-get total-conservators) u1))
+        (ok true)
+    )
+)
+
+;; Record conservation work with comprehensive details
+(define-public (record-conservation
+    (artwork-id uint)
+    (conservation-type (string-ascii 64))
+    (condition-before uint)
+    (condition-after uint)
+    (materials-used (string-ascii 256))
+    (techniques-applied (string-ascii 256))
+    (cost uint)
+    (duration-days uint)
+    (documentation-hash (string-ascii 64)))
+    (let (
+        (artwork (unwrap! (map-get? Artworks {artwork-id: artwork-id}) ERR-NOT-FOUND))
+        (conservator (unwrap! (map-get? CertifiedConservators {conservator: tx-sender}) ERR-CONSERVATION-UNAUTHORIZED))
+        (counter (default-to {conservation-count: u0} (map-get? ArtworkConservationCounter {artwork-id: artwork-id})))
+        (new-conservation-id (+ (get conservation-count counter) u1))
+    )
+        (asserts! (get active conservator) ERR-CONSERVATION-UNAUTHORIZED)
+        (asserts! (and (<= condition-before u10) (<= condition-after u10)) ERR-INVALID-CONDITION-SCORE)
+        
+        (map-set ConservationRecords
+            { artwork-id: artwork-id, conservation-id: new-conservation-id }
+            {
+                conservator: tx-sender,
+                conservation-type: conservation-type,
+                condition-before: condition-before,
+                condition-after: condition-after,
+                materials-used: materials-used,
+                techniques-applied: techniques-applied,
+                cost: cost,
+                duration-days: duration-days,
+                timestamp: stacks-block-height,
+                documentation-hash: documentation-hash
+            }
+        )
+        
+        (map-set ArtworkConservationCounter {artwork-id: artwork-id} {conservation-count: new-conservation-id})
+        
+        ;; Record in main provenance chain
+        (unwrap! (record-provenance-event 
+            artwork-id 
+            PROVENANCE-CONSERVATION 
+            (concat "Conservation: " conservation-type)
+            (some documentation-hash)
+            none) ERR-INVALID-PROVENANCE-TYPE)
+        
+        (ok new-conservation-id)
+    )
+)
+
+;; Record comprehensive condition assessment
+(define-public (record-condition-assessment
+    (artwork-id uint)
+    (overall-condition uint)
+    (structural-integrity uint)
+    (surface-condition uint)
+    (color-stability uint)
+    (environmental-damage uint)
+    (assessment-method (string-ascii 128))
+    (recommendations (string-ascii 512))
+    (next-assessment-due uint))
+    (let (
+        (artwork (unwrap! (map-get? Artworks {artwork-id: artwork-id}) ERR-NOT-FOUND))
+        (counter (default-to {assessment-count: u0} (map-get? ArtworkAssessmentCounter {artwork-id: artwork-id})))
+        (new-assessment-id (+ (get assessment-count counter) u1))
+    )
+        (asserts! (and 
+            (<= overall-condition u10)
+            (<= structural-integrity u10)
+            (<= surface-condition u10)
+            (<= color-stability u10)
+            (<= environmental-damage u10)) ERR-INVALID-CONDITION-SCORE)
+        
+        (map-set ConditionAssessments
+            { artwork-id: artwork-id, assessment-id: new-assessment-id }
+            {
+                assessor: tx-sender,
+                overall-condition: overall-condition,
+                structural-integrity: structural-integrity,
+                surface-condition: surface-condition,
+                color-stability: color-stability,
+                environmental-damage: environmental-damage,
+                assessment-method: assessment-method,
+                recommendations: recommendations,
+                next-assessment-due: next-assessment-due,
+                timestamp: stacks-block-height
+            }
+        )
+        
+        (map-set ArtworkAssessmentCounter {artwork-id: artwork-id} {assessment-count: new-assessment-id})
+        
+        ;; Record in main provenance chain
+        (unwrap! (record-provenance-event 
+            artwork-id 
+            PROVENANCE-CONDITION-ASSESSMENT 
+            (concat "Condition assessment - Overall: " (uint-to-ascii overall-condition))
+            none
+            none) ERR-INVALID-PROVENANCE-TYPE)
+        
+        (ok new-assessment-id)
+    )
+)
+
+;; Record location change with detailed custody information
+(define-public (record-location-change
+    (artwork-id uint)
+    (location-type (string-ascii 32))
+    (institution-name (string-ascii 128))
+    (physical-address (string-ascii 256))
+    (custody-type (string-ascii 32))
+    (environmental-conditions (string-ascii 128))
+    (security-level uint)
+    (insurance-coverage uint)
+    (moved-from (optional (string-ascii 128))))
+    (let (
+        (artwork (unwrap! (map-get? Artworks {artwork-id: artwork-id}) ERR-NOT-FOUND))
+        (counter (default-to {location-count: u0} (map-get? ArtworkLocationCounter {artwork-id: artwork-id})))
+        (new-location-id (+ (get location-count counter) u1))
+    )
+        (asserts! (<= security-level u10) ERR-INVALID-CONDITION-SCORE)
+        
+        (map-set LocationHistory
+            { artwork-id: artwork-id, location-id: new-location-id }
+            {
+                location-type: location-type,
+                institution-name: institution-name,
+                physical-address: physical-address,
+                custody-type: custody-type,
+                environmental-conditions: environmental-conditions,
+                security-level: security-level,
+                insurance-coverage: insurance-coverage,
+                moved-from: moved-from,
+                timestamp: stacks-block-height
+            }
+        )
+        
+        (map-set ArtworkLocationCounter {artwork-id: artwork-id} {location-count: new-location-id})
+        
+        ;; Record in main provenance chain
+        (unwrap! (record-provenance-event 
+            artwork-id 
+            PROVENANCE-LOCATION-CHANGE 
+            (concat "Moved to: " institution-name)
+            none
+            (some physical-address)) ERR-INVALID-PROVENANCE-TYPE)
+        
+        (ok new-location-id)
+    )
+)
+
+;; Record insurance and valuation updates
+(define-public (record-insurance-update
+    (artwork-id uint)
+    (insurer (string-ascii 128))
+    (policy-number (string-ascii 64))
+    (insured-value uint)
+    (premium-amount uint)
+    (coverage-type (string-ascii 64))
+    (policy-start uint)
+    (policy-end uint)
+    (appraisal-date uint)
+    (appraiser (string-ascii 128)))
+    (let (
+        (artwork (unwrap! (map-get? Artworks {artwork-id: artwork-id}) ERR-NOT-FOUND))
+        (counter (default-to {insurance-count: u0} (map-get? ArtworkInsuranceCounter {artwork-id: artwork-id})))
+        (new-insurance-id (+ (get insurance-count counter) u1))
+    )
+        (map-set InsuranceHistory
+            { artwork-id: artwork-id, insurance-id: new-insurance-id }
+            {
+                insurer: insurer,
+                policy-number: policy-number,
+                insured-value: insured-value,
+                premium-amount: premium-amount,
+                coverage-type: coverage-type,
+                policy-start: policy-start,
+                policy-end: policy-end,
+                appraisal-date: appraisal-date,
+                appraiser: appraiser,
+                timestamp: stacks-block-height
+            }
+        )
+        
+        (map-set ArtworkInsuranceCounter {artwork-id: artwork-id} {insurance-count: new-insurance-id})
+        
+        ;; Record in main provenance chain
+        (unwrap! (record-provenance-event 
+            artwork-id 
+            PROVENANCE-INSURANCE-UPDATE 
+            (concat "Insurance updated - Value: " (uint-to-ascii insured-value))
+            none
+            none) ERR-INVALID-PROVENANCE-TYPE)
+        
+        (ok new-insurance-id)
+    )
+)
+
+;; Core provenance event recording function
+(define-private (record-provenance-event
+    (artwork-id uint)
+    (event-type (string-ascii 32))
+    (description (string-ascii 512))
+    (documentation-hash (optional (string-ascii 64)))
+    (location (optional (string-ascii 256))))
+    (let (
+        (counter (default-to {event-count: u0} (map-get? ArtworkProvenanceCounter {artwork-id: artwork-id})))
+        (new-event-id (+ (get event-count counter) u1))
+    )
+        (map-set ProvenanceChain
+            { artwork-id: artwork-id, event-id: new-event-id }
+            {
+                event-type: event-type,
+                event-performer: tx-sender,
+                timestamp: stacks-block-height,
+                block-height: stacks-block-height,
+                description: description,
+                location: location,
+                documentation-hash: documentation-hash,
+                verified: false,
+                verifier: none
+            }
+        )
+        
+        (map-set ArtworkProvenanceCounter {artwork-id: artwork-id} {event-count: new-event-id})
+        (var-set total-provenance-events (+ (var-get total-provenance-events) u1))
+        (ok new-event-id)
+    )
+)
+
+;; Read-only functions for provenance queries
+
+(define-read-only (get-provenance-event (artwork-id uint) (event-id uint))
+    (map-get? ProvenanceChain {artwork-id: artwork-id, event-id: event-id})
+)
+
+(define-read-only (get-conservation-record (artwork-id uint) (conservation-id uint))
+    (map-get? ConservationRecords {artwork-id: artwork-id, conservation-id: conservation-id})
+)
+
+(define-read-only (get-condition-assessment (artwork-id uint) (assessment-id uint))
+    (map-get? ConditionAssessments {artwork-id: artwork-id, assessment-id: assessment-id})
+)
+
+(define-read-only (get-location-history (artwork-id uint) (location-id uint))
+    (map-get? LocationHistory {artwork-id: artwork-id, location-id: location-id})
+)
+
+(define-read-only (get-insurance-record (artwork-id uint) (insurance-id uint))
+    (map-get? InsuranceHistory {artwork-id: artwork-id, insurance-id: insurance-id})
+)
+
+(define-read-only (get-conservator-profile (conservator principal))
+    (map-get? CertifiedConservators {conservator: conservator})
+)
+
+(define-read-only (get-artwork-provenance-count (artwork-id uint))
+    (default-to {event-count: u0} (map-get? ArtworkProvenanceCounter {artwork-id: artwork-id}))
+)
+
+(define-read-only (get-artwork-conservation-count (artwork-id uint))
+    (default-to {conservation-count: u0} (map-get? ArtworkConservationCounter {artwork-id: artwork-id}))
+)
+
+(define-read-only (get-latest-condition-score (artwork-id uint))
+    (let ((assessment-count (get assessment-count (get-artwork-assessment-count artwork-id))))
+        (if (> assessment-count u0)
+            (map-get? ConditionAssessments {artwork-id: artwork-id, assessment-id: assessment-count})
+            none
+        )
+    )
+)
+
+(define-read-only (get-current-location (artwork-id uint))
+    (let ((location-count (get location-count (get-artwork-location-count artwork-id))))
+        (if (> location-count u0)
+            (map-get? LocationHistory {artwork-id: artwork-id, location-id: location-count})
+            none
+        )
+    )
+)
+
+(define-read-only (get-artwork-assessment-count (artwork-id uint))
+    (default-to {assessment-count: u0} (map-get? ArtworkAssessmentCounter {artwork-id: artwork-id}))
+)
+
+(define-read-only (get-artwork-location-count (artwork-id uint))
+    (default-to {location-count: u0} (map-get? ArtworkLocationCounter {artwork-id: artwork-id}))
+)
+
+;; Helper function to convert uint to string (simplified)
+(define-private (uint-to-ascii (value uint))
+    (if (is-eq value u0) "0"
+    (if (is-eq value u1) "1"
+    (if (is-eq value u2) "2"
+    (if (is-eq value u3) "3"
+    (if (is-eq value u4) "4"
+    (if (is-eq value u5) "5"
+    (if (is-eq value u6) "6"
+    (if (is-eq value u7) "7"
+    (if (is-eq value u8) "8"
+    (if (is-eq value u9) "9"
+    "10"))))))))))
+)
+
+
